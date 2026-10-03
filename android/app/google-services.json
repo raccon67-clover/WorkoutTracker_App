@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "280561903262",
+    "project_id": "fir-auth-5ec40",
+    "storage_bucket": "fir-auth-5ec40.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:280561903262:android:8bf605136adfd37bc2bd8f",
+        "android_client_info": {
+          "package_name": "com.example.workout_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC-LJPFUsV2FT7Rj65hNrDJFXnBZGV9G48"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
