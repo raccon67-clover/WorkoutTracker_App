@@ -9,6 +9,9 @@ import 'workout_history_page.dart';
 import 'exercise_library_page.dart';
 import '../data/exercise_catalog.dart';
 import '../models/workout.dart';
+import '../services/notification_coordinator.dart';
+import '../services/notification_service.dart';
+import '../services/welcome_email_service.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,7 +20,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   int _currentIndex = 0;
 
   int _dashRefreshToken = 0;
@@ -28,6 +31,8 @@ class _HomePageState extends State<HomePage> {
   int _profileVisit = 0;
   int _launchToken = 0;
   Suggestion? _launch;
+  String _openCustomId = '';
+  int _openCustomToken = 0;
 
   static const List<_NavItem> _navItems = [
     _NavItem(icon: Icons.home_rounded, label: 'Home'),
@@ -37,9 +42,47 @@ class _HomePageState extends State<HomePage> {
     _NavItem(icon: Icons.person_rounded, label: 'Profile'),
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    NotificationService.instance.openLogRequest.addListener(_onOpenLogRequest);
+    NotificationCoordinator.instance.refresh();
+    WelcomeEmailService.instance.sendIfFirstTime();
+    NotificationService.instance.consumeLaunchAction().then((open) {
+      if (open && mounted) _goToTab(1);
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    NotificationService.instance.openLogRequest
+        .removeListener(_onOpenLogRequest);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      NotificationCoordinator.instance.refresh();
+    }
+  }
+
+  // "Start workout" button on a notification.
+  void _onOpenLogRequest() {
+    final svc = NotificationService.instance;
+    if (!svc.openLogRequest.value) return;
+    svc.openLogRequest.value = false;
+    if (mounted) _goToTab(1);
+  }
+
   void _goToTab(int index) {
     setState(() {
       _currentIndex = index;
+      // History / Progress reload each time they're opened so a freshly
+      // saved workout (custom, suggested, or ended early) always shows up.
+      if (index == 2 || index == 3) _dashRefreshToken++;
       if (index == 1) _logVisit++;
       if (index == 4) _profileVisit++;
     });
@@ -50,6 +93,15 @@ class _HomePageState extends State<HomePage> {
       context,
       MaterialPageRoute(
         builder: (_) => ExerciseLibraryPage(
+          browseOnly: true,
+          onOpenCustom: (id) {
+            setState(() {
+              _openCustomId = id;
+              _openCustomToken++;
+              _logVisit++;
+              _currentIndex = 1;
+            });
+          },
           onAddToLog: (exercises) {
             setState(() {
               _pendingExercises = exercises;
@@ -98,10 +150,19 @@ class _HomePageState extends State<HomePage> {
         initialExercisesToken: _logVisit,
         launch: _launch,
         launchToken: _launchToken,
+        openCustomId: _openCustomId,
+        openCustomToken: _openCustomToken,
+        onOpenCustomConsumed: () {
+          if (mounted && _openCustomId.isNotEmpty) {
+            setState(() => _openCustomId = '');
+          }
+        },
         visitToken: _logVisit,
         onSaved: () {
           _dashRefreshToken++;
           _goToTab(0);
+          // Trained today? Skip today's reminder and update the weekly summary.
+          NotificationCoordinator.instance.refresh();
         },
         onLaunchConsumed: () {
           if (mounted && _launch != null) setState(() => _launch = null);

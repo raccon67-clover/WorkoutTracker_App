@@ -6,6 +6,10 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose a profile picture from your photos.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Take a profile picture with your camera.</string>
 	<key>CFBundleDisplayName</key>
 	<string>Workout App</string>
 	<key>CFBundleExecutable</key>

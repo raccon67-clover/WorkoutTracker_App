@@ -13,7 +13,11 @@ Future<void> main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-  await NotificationService.instance.initialize();
+  try {
+    await NotificationService.instance.initialize();
+  } catch (e) {
+    debugPrint('Notification setup failed: $e');
+  }
   runApp(const MyApp());
 }
 

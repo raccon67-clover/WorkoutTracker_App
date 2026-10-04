@@ -73,7 +73,12 @@ class _WidgetTreeState extends State<WidgetTree> {
             }
 
             if (profileSnapshot.hasError) {
-              return const _LoadingScreen();
+              return _ProfileErrorScreen(
+                onRetry: () => setState(() {
+                  _profileFuture = _loadProfileFor(user.uid);
+                }),
+                onSignOut: () => Auth().signOut(),
+              );
             }
 
             final profile = profileSnapshot.data;
@@ -94,6 +99,50 @@ class _WidgetTreeState extends State<WidgetTree> {
           },
         );
       },
+    );
+  }
+}
+
+class _ProfileErrorScreen extends StatelessWidget {
+  final VoidCallback onRetry;
+  final VoidCallback onSignOut;
+
+  const _ProfileErrorScreen({required this.onRetry, required this.onSignOut});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBackground,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.cloud_off_rounded, color: Colors.grey, size: 48),
+              const SizedBox(height: 16),
+              const Text(
+                "We couldn't load your profile.",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Check your connection and try again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey[500]),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(onPressed: onRetry, child: const Text('Try again')),
+              TextButton(onPressed: onSignOut, child: const Text('Sign out')),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

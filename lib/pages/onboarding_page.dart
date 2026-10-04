@@ -287,20 +287,15 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   Future<void> _editAge() async {
-    final controller = TextEditingController(
-      text: _age?.toString() ?? '',
-    );
-
     final value = await _showNumberInput(
       title: 'Enter your age',
-      controller: controller,
+      initialText: _age?.toString() ?? '',
       suffix: 'years',
       decimal: false,
-      min: 1,
-      max: 120,
+      min: Limits.minAge,
+      max: Limits.maxAge,
+      icon: Icons.cake_outlined,
     );
-
-    controller.dispose();
 
     if (value == null) return;
 
@@ -319,20 +314,16 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   Future<void> _editWeight() async {
-    final controller = TextEditingController(
-      text: _weight == null ? '' : _formatNumber(_weight!),
-    );
-
     final value = await _showNumberInput(
       title: 'Enter your weight',
-      controller: controller,
+      initialText: _weight == null ? '' : _formatNumber(_weight!),
       suffix: _metricWeight ? 'kg' : 'lbs',
       decimal: true,
       min: _metricWeight ? 20 : 44,
       max: _metricWeight ? 300 : 660,
+      step: _metricWeight ? 0.5 : 1,
+      icon: Icons.monitor_weight_outlined,
     );
-
-    controller.dispose();
 
     if (value == null) return;
 
@@ -354,20 +345,15 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   Future<void> _editHeightCm() async {
-    final controller = TextEditingController(
-      text: _heightCm == null ? '' : _formatNumber(_heightCm!),
-    );
-
     final value = await _showNumberInput(
       title: 'Enter your height',
-      controller: controller,
+      initialText: _heightCm == null ? '' : _formatNumber(_heightCm!),
       suffix: 'cm',
       decimal: false,
       min: 100,
       max: 250,
+      icon: Icons.height_rounded,
     );
-
-    controller.dispose();
 
     if (value == null) return;
 
@@ -386,20 +372,15 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   Future<void> _editFeet() async {
-    final controller = TextEditingController(
-      text: _heightFeet?.toString() ?? '',
-    );
-
     final value = await _showNumberInput(
       title: 'Enter feet',
-      controller: controller,
+      initialText: _heightFeet?.toString() ?? '',
       suffix: 'ft',
       decimal: false,
       min: 3,
       max: 8,
+      icon: Icons.height_rounded,
     );
-
-    controller.dispose();
 
     if (value == null) return;
 
@@ -413,20 +394,15 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   Future<void> _editInches() async {
-    final controller = TextEditingController(
-      text: _heightInches?.toString() ?? '',
-    );
-
     final value = await _showNumberInput(
       title: 'Enter inches',
-      controller: controller,
+      initialText: _heightInches?.toString() ?? '',
       suffix: 'in',
       decimal: false,
       min: 0,
       max: 11,
+      icon: Icons.straighten_rounded,
     );
-
-    controller.dispose();
 
     if (value == null) return;
 
@@ -450,160 +426,27 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   Future<String?> _showNumberInput({
     required String title,
-    required TextEditingController controller,
+    required String initialText,
     required String suffix,
     required bool decimal,
     required num min,
     required num max,
-  }) async {
-    String? error;
-
-    final result = await showDialog<String>(
+    IconData icon = Icons.edit_outlined,
+    num step = 1,
+  }) {
+    return showDialog<String>(
       context: context,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            void submit() {
-              final value = decimal
-                  ? double.tryParse(controller.text.trim())
-                  : int.tryParse(controller.text.trim());
-
-              if (value == null) {
-                setDialogState(() {
-                  error = 'Enter a valid number.';
-                });
-                return;
-              }
-
-              if (value < min || value > max) {
-                setDialogState(() {
-                  error = 'Enter a value from $min to $max.';
-                });
-                return;
-              }
-
-              Navigator.of(dialogContext).pop(controller.text.trim());
-            }
-
-            return AlertDialog(
-              backgroundColor: kSurface,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(24),
-              ),
-              title: Text(
-                title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: kBackground,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: error == null
-                            ? Colors.grey[800]!
-                            : Colors.redAccent,
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: controller,
-                            autofocus: true,
-                            keyboardType: TextInputType.numberWithOptions(
-                              decimal: decimal,
-                            ),
-                            inputFormatters: [
-                              if (decimal)
-                                FilteringTextInputFormatter.allow(
-                                  RegExp(r'^\d{0,3}(\.\d{0,2})?'),
-                                )
-                              else
-                                FilteringTextInputFormatter.digitsOnly,
-                            ],
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 28,
-                              fontWeight: FontWeight.w800,
-                            ),
-                            decoration: const InputDecoration(
-                              border: InputBorder.none,
-                              hintText: 'Enter value',
-                              hintStyle: TextStyle(
-                                color: Colors.grey,
-                              ),
-                            ),
-                            onSubmitted: (_) => submit(),
-                          ),
-                        ),
-                        Text(
-                          suffix,
-                          style: TextStyle(
-                            color: Colors.grey[400],
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (error != null) ...[
-                    const SizedBox(height: 10),
-                    Text(
-                      error!,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.redAccent,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(dialogContext).pop();
-                  },
-                  child: Text(
-                    'Cancel',
-                    style: TextStyle(
-                      color: Colors.grey[400],
-                    ),
-                  ),
-                ),
-                ElevatedButton(
-                  onPressed: submit,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: kAccent,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                  ),
-                  child: const Text(
-                    'Use value',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      builder: (dialogContext) => _NumberInputDialog(
+        title: title,
+        icon: icon,
+        initialText: initialText,
+        suffix: suffix,
+        decimal: decimal,
+        min: min,
+        max: max,
+        step: step,
+      ),
     );
-
-    return result;
   }
 
   void _showInputError(String message) {
@@ -1081,6 +924,7 @@ class _WheelNumberPicker extends StatefulWidget {
 
 class _WheelNumberPickerState extends State<_WheelNumberPicker> {
   late FixedExtentScrollController _controller;
+  bool _syncing = false;
 
   int _indexForValue(int value) {
     return (value - widget.min + 1).clamp(
@@ -1125,11 +969,16 @@ class _WheelNumberPickerState extends State<_WheelNumberPicker> {
             : _indexForValue(widget.value!);
 
         if (_controller.selectedItem != target) {
-          _controller.animateToItem(
-            target,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
+          // Ignore the in-between values the wheel passes through while it
+          // animates to the typed value, otherwise they overwrite it.
+          _syncing = true;
+          _controller
+              .animateToItem(
+                target,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              )
+              .whenComplete(() => _syncing = false);
         }
       });
     }
@@ -1178,7 +1027,7 @@ class _WheelNumberPickerState extends State<_WheelNumberPicker> {
               perspective: 0.003,
               physics: const FixedExtentScrollPhysics(),
               onSelectedItemChanged: (index) {
-                if (index == 0) return;
+                if (_syncing || index == 0) return;
 
                 widget.onChanged(widget.min + index - 1);
               },
@@ -1266,6 +1115,7 @@ class _DecimalWheelPicker extends StatefulWidget {
 
 class _DecimalWheelPickerState extends State<_DecimalWheelPicker> {
   late FixedExtentScrollController _controller;
+  bool _syncing = false;
 
   int get _valueCount =>
       ((widget.max - widget.min) / widget.step).round() + 1;
@@ -1319,11 +1169,16 @@ class _DecimalWheelPickerState extends State<_DecimalWheelPicker> {
             : _indexForValue(widget.value!);
 
         if (_controller.selectedItem != target) {
-          _controller.animateToItem(
-            target,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
+          // Ignore the in-between values the wheel passes through while it
+          // animates to the typed value, otherwise they overwrite it.
+          _syncing = true;
+          _controller
+              .animateToItem(
+                target,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              )
+              .whenComplete(() => _syncing = false);
         }
       });
     }
@@ -1380,7 +1235,7 @@ class _DecimalWheelPickerState extends State<_DecimalWheelPicker> {
               perspective: 0.003,
               physics: const FixedExtentScrollPhysics(),
               onSelectedItemChanged: (index) {
-                if (index == 0) return;
+                if (_syncing || index == 0) return;
 
                 widget.onChanged(_valueAt(index));
               },
@@ -1514,6 +1369,7 @@ class _SmallWheelPicker extends StatefulWidget {
 
 class _SmallWheelPickerState extends State<_SmallWheelPicker> {
   late FixedExtentScrollController _controller;
+  bool _syncing = false;
 
   int _indexForValue(int value) {
     return (value - widget.min + 1).clamp(
@@ -1558,11 +1414,16 @@ class _SmallWheelPickerState extends State<_SmallWheelPicker> {
             : _indexForValue(widget.value!);
 
         if (_controller.selectedItem != target) {
-          _controller.animateToItem(
-            target,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
+          // Ignore the in-between values the wheel passes through while it
+          // animates to the typed value, otherwise they overwrite it.
+          _syncing = true;
+          _controller
+              .animateToItem(
+                target,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOut,
+              )
+              .whenComplete(() => _syncing = false);
         }
       });
     }
@@ -1633,7 +1494,7 @@ class _SmallWheelPickerState extends State<_SmallWheelPicker> {
                     perspective: 0.003,
                     physics: const FixedExtentScrollPhysics(),
                     onSelectedItemChanged: (index) {
-                      if (index == 0) return;
+                      if (_syncing || index == 0) return;
 
                       widget.onChanged(widget.min + index - 1);
                     },
@@ -1897,6 +1758,334 @@ class _ChoiceList extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Number-entry popup used when the person taps a wheel to type a value.
+///
+/// Owns its own TextEditingController so it is only disposed once the dialog
+/// has fully left the tree.
+class _NumberInputDialog extends StatefulWidget {
+  final String title;
+  final IconData icon;
+  final String initialText;
+  final String suffix;
+  final bool decimal;
+  final num min;
+  final num max;
+  final num step;
+
+  const _NumberInputDialog({
+    required this.title,
+    required this.icon,
+    required this.initialText,
+    required this.suffix,
+    required this.decimal,
+    required this.min,
+    required this.max,
+    required this.step,
+  });
+
+  @override
+  State<_NumberInputDialog> createState() => _NumberInputDialogState();
+}
+
+class _NumberInputDialogState extends State<_NumberInputDialog> {
+  late final TextEditingController _controller;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialText);
+    _controller.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _controller.text.length,
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  String _format(num value) {
+    if (value == value.roundToDouble()) return value.toInt().toString();
+    return value.toStringAsFixed(1);
+  }
+
+  num? _parse(String text) {
+    return widget.decimal ? double.tryParse(text) : int.tryParse(text);
+  }
+
+  void _nudge(int direction) {
+    final current = _parse(_controller.text.trim());
+    num next = current == null ? widget.min : current + widget.step * direction;
+    next = next.clamp(widget.min, widget.max);
+
+    HapticFeedback.selectionClick();
+    setState(() {
+      _error = null;
+      _controller.text = _format(next);
+      _controller.selection = TextSelection.collapsed(
+        offset: _controller.text.length,
+      );
+    });
+  }
+
+  void _submit() {
+    final text = _controller.text.trim();
+    final value = _parse(text);
+
+    if (value == null) {
+      setState(() => _error = 'Enter a valid number.');
+      return;
+    }
+
+    if (value < widget.min || value > widget.max) {
+      setState(() {
+        _error = 'Enter a value from ${_format(widget.min)} '
+            'to ${_format(widget.max)}.';
+      });
+      return;
+    }
+
+    Navigator.of(context).pop(text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasError = _error != null;
+
+    return Dialog(
+      backgroundColor: kSurface,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(28),
+      ),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 28, 24, 22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: kAccent.withValues(alpha: 0.14),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(widget.icon, color: kAccent, size: 28),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              widget.title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Between ${_format(widget.min)} and '
+              '${_format(widget.max)} ${widget.suffix}',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.grey[500],
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                _StepButton(
+                  icon: Icons.remove_rounded,
+                  onTap: () => _nudge(-1),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    padding: const EdgeInsets.only(top: 6, bottom: 10),
+                    decoration: BoxDecoration(
+                      color: kBackground,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: hasError
+                            ? Colors.redAccent
+                            : kAccent.withValues(alpha: 0.55),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TextField(
+                          controller: _controller,
+                          autofocus: true,
+                          textAlign: TextAlign.center,
+                          cursorColor: kAccent,
+                          keyboardType: TextInputType.numberWithOptions(
+                            decimal: widget.decimal,
+                          ),
+                          textInputAction: TextInputAction.done,
+                          inputFormatters: [
+                            if (widget.decimal)
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'^\d{0,3}(\.\d{0,2})?'),
+                              )
+                            else
+                              FilteringTextInputFormatter.digitsOnly,
+                          ],
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 40,
+                            fontWeight: FontWeight.w900,
+                          ),
+                          decoration: const InputDecoration(
+                            filled: false,
+                            isCollapsed: true,
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            errorBorder: InputBorder.none,
+                            disabledBorder: InputBorder.none,
+                            contentPadding: EdgeInsets.symmetric(vertical: 10),
+                            hintText: '0',
+                            hintStyle: TextStyle(color: Colors.grey),
+                          ),
+                          onChanged: (_) {
+                            if (_error != null) setState(() => _error = null);
+                          },
+                          onSubmitted: (_) => _submit(),
+                        ),
+                        Text(
+                          widget.suffix.toUpperCase(),
+                          style: TextStyle(
+                            color: kAccent,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.4,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                _StepButton(
+                  icon: Icons.add_rounded,
+                  onTap: () => _nudge(1),
+                ),
+              ],
+            ),
+            AnimatedSize(
+              duration: const Duration(milliseconds: 200),
+              alignment: Alignment.topCenter,
+              child: hasError
+                  ? Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.redAccent,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
+            const SizedBox(height: 24),
+            Row(
+              children: [
+                Expanded(
+                  flex: 2,
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.grey[300],
+                      minimumSize: const Size.fromHeight(52),
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      side: BorderSide(color: Colors.grey[800]!),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    child: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'Cancel',
+                        maxLines: 1,
+                        softWrap: false,
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 3,
+                  child: ElevatedButton(
+                    onPressed: _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: kAccent,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      minimumSize: const Size.fromHeight(52),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    child: const Text(
+                      'Confirm',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StepButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+
+  const _StepButton({
+    required this.icon,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: kBackground,
+      shape: CircleBorder(
+        side: BorderSide(color: Colors.grey[800]!),
+      ),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Icon(icon, color: Colors.white, size: 22),
         ),
       ),
     );

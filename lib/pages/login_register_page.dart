@@ -4,6 +4,7 @@ import '../auth.dart';
 import '../main.dart' show kAccent, kBackground, kSurface;
 import '../models/user_profile.dart';
 import '../services/database_service.dart';
+import '../services/email_check.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -24,6 +25,14 @@ class _LoginPageState extends State<LoginPage> {
   bool _hidePassword = true;
   bool _hideConfirmPassword = true;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    // A Google sign-in that was rejected after Firebase signed in rebuilds
+    // this page, so pick the explanation up here.
+    _errorMessage = Auth.takePendingNotice();
+  }
 
   @override
   void dispose() {
@@ -65,10 +74,30 @@ class _LoginPageState extends State<LoginPage> {
         );
       } else {
         final name = _nameController.text.trim();
+
+        // Reject typos, non-existent domains and impossible Gmail names
+        // BEFORE creating the account.
+        final emailProblem =
+            await EmailCheck.problem(_emailController.text);
+        if (emailProblem != null) {
+          if (mounted) setState(() => _errorMessage = emailProblem);
+          return;
+        }
+
         final credential = await Auth().createUserWithEmailAndPassword(
           email: _emailController.text.trim(),
           password: _passwordController.text,
         );
+
+        // Send the verification link right away. If this fails the verify
+        // screen still has a Resend button, so don't block registration.
+        // The account can't be used until the link is clicked, which is what
+        // proves the email address really exists.
+        if (Auth.requireEmailVerification) {
+          try {
+            await credential.user?.sendEmailVerification();
+          } catch (_) {}
+        }
 
         await credential.user?.updateDisplayName(name);
 
@@ -103,6 +132,11 @@ class _LoginPageState extends State<LoginPage> {
 
     try {
       await Auth().signInWithGoogle();
+    } on AccountConflictException {
+      Auth.takePendingNotice();
+      if (mounted) {
+        setState(() => _errorMessage = AccountConflictException.message);
+      }
     } on FirebaseAuthException catch (e) {
       if (mounted) setState(() => _errorMessage = _friendlyError(e));
     } catch (_) {
@@ -142,6 +176,18 @@ class _LoginPageState extends State<LoginPage> {
                 sending = true;
                 error = null;
               });
+
+              // Don't send reset links to emails that don't exist.
+              final problem = await EmailCheck.problem(email);
+              if (problem != null) {
+                if (dialogContext.mounted) {
+                  setDialogState(() {
+                    sending = false;
+                    error = problem;
+                  });
+                }
+                return;
+              }
 
               try {
                 await Auth().sendPasswordResetEmail(email);
@@ -207,7 +253,7 @@ class _LoginPageState extends State<LoginPage> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Text(
-                    'Enter the email you used to register. If it has an email/password account, Firebase will send a reset link.',
+                    'Enter the email you registered with. Reset links only work for accounts created with email & password. If you signed up with Google, there is no password to reset. Use "Continue with Google" instead.',
                     style: TextStyle(
                       color: Colors.grey[400],
                       fontSize: 13,
@@ -279,7 +325,9 @@ class _LoginPageState extends State<LoginPage> {
       },
     );
 
-    controller.dispose();
+    // Dispose after the dialog's close animation; disposing immediately can
+    // trigger the '_dependents.isEmpty' assertion.
+    Future<void>.delayed(const Duration(milliseconds: 500), controller.dispose);
 
     if (sentEmail == null || !mounted) return;
 
@@ -287,7 +335,7 @@ class _LoginPageState extends State<LoginPage> {
       SnackBar(
         behavior: SnackBarBehavior.floating,
         content: Text(
-          'Reset request sent for $sentEmail. Check your inbox and spam folder.',
+          'If $sentEmail has an email/password account, a reset link is on its way. Check spam too. Google accounts have no password, so use Continue with Google.',
         ),
       ),
     );
@@ -301,7 +349,12 @@ class _LoginPageState extends State<LoginPage> {
       case 'invalid-credential':
         return 'Incorrect email or password.';
       case 'email-already-in-use':
-        return 'An account already exists for that email.';
+        return 'An account already exists for that email. Sign in instead '
+            '(or use Continue with Google if you signed up with Google).';
+      case 'account-exists-with-different-credential':
+        return AccountConflictException.message;
+      case 'too-many-requests':
+        return 'Too many attempts. Please wait a bit and try again.';
       case 'invalid-email':
         return 'That email address is not valid.';
       case 'weak-password':
@@ -670,7 +723,7 @@ class _LoginPageState extends State<LoginPage> {
                     Text(
                       _isLogin
                           ? 'Use the same sign-in method you used when creating your account.'
-                          : 'After registration, we’ll guide you through your profile setup.',
+                          : 'We’ll email you a link to verify your address before you continue.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.grey[600],

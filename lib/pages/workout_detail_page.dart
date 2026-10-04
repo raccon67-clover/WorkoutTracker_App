@@ -29,11 +29,15 @@ class WorkoutDetailPage extends StatefulWidget {
   final int? workoutId;
   final ValueChanged<Workout>? onRepeat;
 
+  /// Set to false to hide the Repeat button (e.g. when opened from the calendar).
+  final bool showRepeat;
+
   const WorkoutDetailPage({
     super.key,
     this.workout,
     this.workoutId,
     this.onRepeat,
+    this.showRepeat = true,
   }) : assert(workout != null || workoutId != null);
 
   @override
@@ -65,7 +69,9 @@ class _WorkoutDetailPageState extends State<WorkoutDetailPage> {
             return _DetailData(supplied, sets);
           }
         }
-      } catch (_) {}
+      } catch (e) {
+      debugPrint('Loading workout sets failed: $e');
+    }
 
       return _DetailData(supplied, {});
     }
@@ -283,15 +289,17 @@ class _WorkoutDetailPageState extends State<WorkoutDetailPage> {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  FilledButton.icon(
-                    onPressed: () => _repeat(workout),
-                    icon: const Icon(
-                      Icons.replay_rounded,
-                      size: 17,
+                  if (widget.showRepeat) ...[
+                    const SizedBox(width: 10),
+                    FilledButton.icon(
+                      onPressed: () => _repeat(workout),
+                      icon: const Icon(
+                        Icons.replay_rounded,
+                        size: 17,
+                      ),
+                      label: const Text('Repeat'),
                     ),
-                    label: const Text('Repeat'),
-                  ),
+                  ],
                 ],
               ),
               const SizedBox(height: 6),

@@ -12,7 +12,20 @@
           "package_name": "com.example.workout_app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "280561903262-lp5h24rgn8ng9at2dvq341aib50q06hs.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.workout_app",
+            "certificate_hash": "04ccdf32db4f66418ff20eb2c203bbbd3bdbd822"
+          }
+        },
+        {
+          "client_id": "280561903262-udjn608gretqghdnnuol970ea7ngltsm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyC-LJPFUsV2FT7Rj65hNrDJFXnBZGV9G48"
@@ -20,7 +33,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "280561903262-udjn608gretqghdnnuol970ea7ngltsm.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "280561903262-71b75a50584r6c9d6aso457pjqk2miu2.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.workoutApp"
+              }
+            }
+          ]
         }
       }
     }

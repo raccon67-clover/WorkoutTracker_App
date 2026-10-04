@@ -304,6 +304,8 @@ class _WorkoutHistoryPageState extends State<WorkoutHistoryPage> {
                           _tag(Icons.fitness_center_rounded,
                               '${workout.exercises.length} ex'),
                           _tag(Icons.layers_rounded, '$sets sets'),
+                          if (workout.notes?.contains('Ended early') == true)
+                            _tag(Icons.flag_outlined, 'Ended early'),
                           if (workout.durationSeconds > 0)
                             _tag(Icons.timer_outlined,
                                 _duration(workout.durationSeconds)),

@@ -7,6 +7,7 @@ import '../main.dart' show kBackground, kSurface, kAccent;
 import '../models/user_profile.dart';
 import '../services/database_service.dart';
 import '../services/cloudinary_service.dart';
+import '../services/notification_coordinator.dart';
 import '../services/notification_service.dart';
 import '../widget_tree.dart';
 import 'edit_profile_page.dart';
@@ -152,11 +153,11 @@ class _ProfilePageState extends State<ProfilePage> {
     if (user == null) return;
 
     if (!enabled) {
-      await NotificationService.instance.cancelWorkoutReminder();
       await DatabaseService.instance.setSetting(
         _notificationSettingKey(user.uid, 'enabled'),
         'false',
       );
+      await NotificationCoordinator.instance.refresh();
       if (!mounted) return;
       setState(() => _notificationsEnabled = false);
       return;
@@ -174,10 +175,6 @@ class _ProfilePageState extends State<ProfilePage> {
     }
 
     try {
-      await NotificationService.instance.scheduleDailyWorkoutReminder(
-        hour: _notificationHour,
-        minute: _notificationMinute,
-      );
       await DatabaseService.instance.setSetting(
         _notificationSettingKey(user.uid, 'enabled'),
         'true',
@@ -186,6 +183,7 @@ class _ProfilePageState extends State<ProfilePage> {
         _notificationSettingKey(user.uid, 'time'),
         '${_notificationHour.toString().padLeft(2, '0')}:${_notificationMinute.toString().padLeft(2, '0')}',
       );
+      await NotificationCoordinator.instance.refresh();
       if (!mounted) return;
       setState(() => _notificationsEnabled = true);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -207,24 +205,22 @@ class _ProfilePageState extends State<ProfilePage> {
       context: context,
       initialTime: TimeOfDay(hour: _notificationHour, minute: _notificationMinute),
     );
-    if (picked == null) return;
+    if (picked == null || !mounted) return;
 
     setState(() {
       _notificationHour = picked.hour;
       _notificationMinute = picked.minute;
     });
 
+    await DatabaseService.instance.setSetting(
+      _notificationSettingKey(user.uid, 'time'),
+      '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}',
+    );
+
     if (!_notificationsEnabled) return;
 
     try {
-      await NotificationService.instance.scheduleDailyWorkoutReminder(
-        hour: picked.hour,
-        minute: picked.minute,
-      );
-      await DatabaseService.instance.setSetting(
-        _notificationSettingKey(user.uid, 'time'),
-        '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}',
-      );
+      await NotificationCoordinator.instance.refresh();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Reminder moved to ${_formatReminderTime()}.')),
@@ -233,6 +229,25 @@ class _ProfilePageState extends State<ProfilePage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not update reminder: $e')),
+      );
+    }
+  }
+
+  Future<void> _sendTestNotification() async {
+    try {
+      final granted = await NotificationService.instance.requestPermission();
+      if (!granted) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Notification permission was not granted.')),
+        );
+        return;
+      }
+      await NotificationCoordinator.instance.sendTest();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not send test notification: $e')),
       );
     }
   }
@@ -268,7 +283,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     ),
                     SizedBox(height: 3),
                     Text(
-                      'Get a daily reminder to stay on track.',
+                      'Daily reminders, streak alerts and a weekly summary.',
                       style: TextStyle(color: Colors.grey, fontSize: 12),
                     ),
                   ],
@@ -311,6 +326,15 @@ class _ProfilePageState extends State<ProfilePage> {
                     const Icon(Icons.chevron_right_rounded, color: Colors.grey),
                   ],
                 ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _sendTestNotification,
+                icon: const Icon(Icons.notifications_active_outlined, size: 18),
+                label: const Text('Send test notification'),
               ),
             ),
           ],
@@ -428,6 +452,8 @@ class _ProfilePageState extends State<ProfilePage> {
         ],
       ),
     );
+
+    Future<void>.delayed(const Duration(milliseconds: 500), controller.dispose);
 
     if (newWeight == null) return;
 

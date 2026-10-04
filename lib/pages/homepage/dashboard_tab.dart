@@ -6,6 +6,7 @@ import '../../models/user_profile.dart';
 import '../../models/workout.dart';
 import '../../services/database_service.dart';
 import '../../services/profile_notifier.dart';
+import '../notifications_page.dart';
 import '../workout_detail_page.dart';
 import 'home_helpers.dart';
 import 'workout_suggestion.dart';
@@ -163,6 +164,7 @@ class _DashboardTabState extends State<DashboardTab> {
       MaterialPageRoute(
         builder: (_) => WorkoutDetailPage(
           workoutId: workout.id!,
+          showRepeat: false,
         ),
       ),
     );
@@ -275,6 +277,12 @@ class _DashboardTabState extends State<DashboardTab> {
                     profile: _profile,
                     onAvatarTap: () =>
                         widget.onGoToTab(4),
+                    onBellTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const NotificationsPage(),
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 20),
                   _HomeSearchCard(
@@ -341,44 +349,60 @@ class _HomeSearchCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 15,
-        ),
-        decoration: BoxDecoration(
-          color: kSurface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: Colors.white.withValues(
-              alpha: .06,
+    return Material(
+      color: kSurface,
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        splashColor: kAccent.withValues(alpha: .12),
+        highlightColor: kAccent.withValues(alpha: .06),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 12,
+          ),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: .07),
             ),
           ),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              Icons.search_rounded,
-              color: Colors.grey[500],
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'Search exercises or workouts...',
-                style: TextStyle(
-                  color: Colors.grey[500],
-                  fontSize: 14,
+          child: Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: kAccent.withValues(alpha: .14),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  Icons.search_rounded,
+                  size: 22,
+                  color: kAccent,
                 ),
               ),
-            ),
-            Icon(
-              Icons.arrow_forward_ios_rounded,
-              size: 15,
-              color: Colors.grey[600],
-            ),
-          ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Search exercises or workouts',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.grey[400],
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              Icon(
+                Icons.chevron_right_rounded,
+                size: 22,
+                color: Colors.grey[600],
+              ),
+            ],
+          ),
         ),
       ),
     );

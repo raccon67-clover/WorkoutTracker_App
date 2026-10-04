@@ -50,7 +50,9 @@ class _ExercisePickerPageState extends State<ExercisePickerPage> {
         _equipment =
             Equipment.values.where((e) => names.contains(e.name)).toSet();
       });
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Loading equipment failed: $e');
+    }
   }
 
   Future<void> _saveEquipment() async {
@@ -59,7 +61,9 @@ class _ExercisePickerPageState extends State<ExercisePickerPage> {
         _equipmentKey,
         _equipment.map((e) => e.name).join(','),
       );
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Saving equipment failed: $e');
+    }
   }
 
   Future<void> _loadRecent() async {
@@ -71,7 +75,9 @@ class _ExercisePickerPageState extends State<ExercisePickerPage> {
         if (c != null) found.add(c);
       }
       if (mounted) setState(() => _recent = found);
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Loading recent exercises failed: $e');
+    }
   }
 
 

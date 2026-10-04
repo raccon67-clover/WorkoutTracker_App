@@ -1,7 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
+import 'dart:ui' show FontFeature;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'
+    show FilteringTextInputFormatter, HapticFeedback, LengthLimitingTextInputFormatter;
 
 import '../data/exercise_catalog.dart';
 import '../main.dart' show kBackground, kSurface, kAccent;
@@ -14,7 +18,23 @@ import 'homepage/workout_suggestion.dart';
 
 const int _defaultSets = 3;
 const int _defaultRestSeconds = 60;
+const int _minCustomRestSeconds = 10;
+const int _maxCustomRestSeconds = 1800; // 30 minutes
+const List<int> _restPresets = [30, 60, 90, 120, 180];
+
+/// 45 -> "45s", 60 -> "1m", 150 -> "2m 30s"
+String _restLabel(int seconds) {
+  if (seconds < 60) return '${seconds}s';
+  final m = seconds ~/ 60;
+  final r = seconds % 60;
+  return r == 0 ? '${m}m' : '${m}m ${r}s';
+}
 const int _repPaceSeconds = 3;
+
+/// Phase colours for the live session screen: red = work, blue = rest,
+/// amber = paused. Colour alone tells you the phase from across the room.
+const Color _kRestColor = Color(0xFF29B6F6);
+const Color _kPausedColor = Color(0xFFFFB300);
 
 String _exerciseImageUrl(String name) {
   final slug = name.toLowerCase().replaceAll(RegExp(r"[^a-z0-9]+"), '-').replaceAll(RegExp(r'^-|-$'), '');
@@ -92,8 +112,173 @@ class _Summary {
   final int exercises;
   final int sets;
   final int seconds;
+  final int totalSets; // planned sets, for "6 of 12 sets" on early finishes
+  final bool partial;
 
-  const _Summary(this.name, this.exercises, this.sets, this.seconds);
+  const _Summary(
+    this.name,
+    this.exercises,
+    this.sets,
+    this.seconds, {
+    this.totalSets = 0,
+    this.partial = false,
+  });
+}
+
+/// Button that only fires after being held down, so a stray tap can't
+/// mark a set as done. A fill sweeps across while you hold.
+class _HoldToConfirmButton extends StatefulWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+  final VoidCallback? onConfirmed;
+  final Duration holdDuration;
+  final double height;
+
+  const _HoldToConfirmButton({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.onConfirmed,
+    this.holdDuration = const Duration(milliseconds: 650),
+    this.height = 68,
+  });
+
+  @override
+  State<_HoldToConfirmButton> createState() => _HoldToConfirmButtonState();
+}
+
+class _HoldToConfirmButtonState extends State<_HoldToConfirmButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(vsync: this, duration: widget.holdDuration)
+      ..addStatusListener((status) {
+        if (status == AnimationStatus.completed) {
+          _c.value = 0;
+          widget.onConfirmed?.call();
+        }
+      });
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  void _down() {
+    if (widget.onConfirmed == null) return;
+    HapticFeedback.selectionClick();
+    _c.forward();
+  }
+
+  void _up() {
+    if (_c.status != AnimationStatus.completed) _c.reverse();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = widget.onConfirmed != null;
+    final radius = BorderRadius.circular(20);
+    return Opacity(
+      opacity: enabled ? 1 : .45,
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
+        onPointerDown: (_) => _down(),
+        onPointerUp: (_) => _up(),
+        onPointerCancel: (_) => _up(),
+        child: ClipRRect(
+          borderRadius: radius,
+          child: Container(
+            height: widget.height,
+            color: widget.color.withValues(alpha: .28),
+            child: AnimatedBuilder(
+              animation: _c,
+              builder: (context, _) => Stack(
+                children: [
+                  Positioned.fill(
+                    child: FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: _c.value,
+                      child: Container(color: widget.color),
+                    ),
+                  ),
+                  Center(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(widget.icon, color: Colors.white, size: 28),
+                        const SizedBox(width: 10),
+                        Text(
+                          widget.label,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 19,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _LeaveChoice { save, discard, stay }
+
+typedef _NextUp = ({_ActiveExercise exercise, int setIndex});
+
+/// Circular progress ring used for the big set / rest timer.
+class _RingPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+  final Color track;
+  final double stroke;
+
+  const _RingPainter({
+    required this.progress,
+    required this.color,
+    required this.track,
+    required this.stroke,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = (size.shortestSide - stroke) / 2;
+    final base = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..color = track;
+    canvas.drawCircle(center, radius, base);
+    if (progress <= 0) return;
+    final arc = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..color = color;
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      -math.pi / 2,
+      2 * math.pi * progress.clamp(0.0, 1.0),
+      false,
+      arc,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_RingPainter old) =>
+      old.progress != progress || old.color != color || old.stroke != stroke;
 }
 
 class LogWorkoutPage extends StatefulWidget {
@@ -101,6 +286,9 @@ class LogWorkoutPage extends StatefulWidget {
   final List<CatalogExercise> initialExercises;
   final int initialExercisesToken;
   final int launchToken;
+  final String openCustomId;
+  final int openCustomToken;
+  final VoidCallback? onOpenCustomConsumed;
   final int visitToken;
   final VoidCallback? onSaved;
   final VoidCallback? onLaunchConsumed;
@@ -113,6 +301,9 @@ class LogWorkoutPage extends StatefulWidget {
     this.initialExercises = const [],
     this.initialExercisesToken = 0,
     this.launchToken = 0,
+    this.openCustomId = '',
+    this.openCustomToken = 0,
+    this.onOpenCustomConsumed,
     this.visitToken = 0,
     this.onSaved,
     this.onLaunchConsumed,
@@ -124,13 +315,15 @@ class LogWorkoutPage extends StatefulWidget {
   State<LogWorkoutPage> createState() => _LogWorkoutPageState();
 }
 
-class _LogWorkoutPageState extends State<LogWorkoutPage> {
+class _LogWorkoutPageState extends State<LogWorkoutPage>
+    with WidgetsBindingObserver {
   final _nameController = TextEditingController(text: 'My Workout');
   final _notesController = TextEditingController();
   final List<_ActiveExercise> _exercises = [];
   final List<_CustomWorkoutTemplate> _customWorkouts = [];
   String? _editingCustomId;
   bool _buildingCustom = false;
+  bool _nameMissing = false;
   bool _customPreviewing = false;
 
   Timer? _ticker;
@@ -140,6 +333,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
   DateTime? _setEndsAt;
   DateTime? _restEndsAt;
   int _restDuration = _defaultRestSeconds;
+  int _restTotal = _defaultRestSeconds;
   int _currentExercise = 0;
   int _currentSet = 0;
   int _liveReps = 0;
@@ -159,6 +353,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initialize();
   }
 
@@ -176,8 +371,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
       });
     }
     if (widget.initialExercises.isNotEmpty && _exercises.isEmpty) {
-      _isSuggestedWorkout = false;
-      _addCatalogExercises(widget.initialExercises);
+      _receiveExercises(widget.initialExercises);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.onInitialExercisesConsumed?.call();
       });
@@ -187,6 +381,16 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
   @override
   void didUpdateWidget(LogWorkoutPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (widget.openCustomToken != oldWidget.openCustomToken &&
+        widget.openCustomId.isNotEmpty) {
+      unawaited(_openSavedCustom(widget.openCustomId));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onOpenCustomConsumed?.call();
+      });
+      return;
+    }
+
     final newSuggestion =
         widget.launch != null && widget.launchToken != oldWidget.launchToken;
     final newCustomSelection =
@@ -204,8 +408,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     }
 
     if (newCustomSelection) {
-      _isSuggestedWorkout = false;
-      _addCatalogExercises(widget.initialExercises);
+      _receiveExercises(widget.initialExercises);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.onInitialExercisesConsumed?.call();
       });
@@ -226,6 +429,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _nameController.dispose();
     _notesController.dispose();
@@ -253,17 +457,6 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
         return '${target}s';
       case ExerciseKind.cardio:
         return '$target min';
-    }
-  }
-
-  String _targetTitle(CatalogExercise exercise) {
-    switch (exercise.kind) {
-      case ExerciseKind.strength:
-        return 'Suggested reps';
-      case ExerciseKind.timed:
-        return 'Suggested time';
-      case ExerciseKind.cardio:
-        return 'Suggested duration';
     }
   }
 
@@ -299,6 +492,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     setState(() {
       _editingCustomId = null;
       _buildingCustom = true;
+      _nameMissing = false;
       _customPreviewing = false;
       _isSuggestedWorkout = false;
       _exercises.clear();
@@ -326,6 +520,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     setState(() {
       _editingCustomId = template.id;
       _buildingCustom = true;
+      _nameMissing = false;
       _customPreviewing = false;
       _isSuggestedWorkout = false;
       _nameController.text = template.name;
@@ -358,12 +553,15 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _saveCustomTemplate() async {
-    if (_isSuggestedWorkout || _exercises.isEmpty) return;
+  /// Saves the custom workout. Returns true only if it was really saved, so
+  /// callers (like Start Workout) never continue without a valid name.
+  Future<bool> _saveCustomTemplate() async {
+    if (_isSuggestedWorkout || _exercises.isEmpty) return false;
     final name = _nameController.text.trim();
     if (name.isEmpty) {
+      setState(() => _nameMissing = true);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Give your custom workout a name.')));
-      return;
+      return false;
     }
     final id = _editingCustomId ?? DateTime.now().microsecondsSinceEpoch.toString();
     final template = _CustomWorkoutTemplate(
@@ -388,6 +586,27 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
       setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Custom workout saved.')));
     }
+    return true;
+  }
+
+  /// Opens one of the saved custom workouts (picked from the Home search).
+  Future<void> _openSavedCustom(String id) async {
+    if (_started) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Finish or leave your current workout first.')),
+      );
+      return;
+    }
+    if (_customWorkouts.isEmpty) await _loadCustomWorkouts();
+    if (!mounted) return;
+    final index = _customWorkouts.indexWhere((t) => t.id == id);
+    if (index < 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('That workout could not be found.')),
+      );
+      return;
+    }
+    _previewCustomTemplate(_customWorkouts[index]);
   }
 
   void _previewCustomTemplate(_CustomWorkoutTemplate template) {
@@ -544,6 +763,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     _restRunning = data['restRunning'] == true;
     _pausedSetRemaining = (data['pausedSetRemaining'] as num?)?.toInt() ?? 0;
     _pausedRestRemaining = (data['pausedRestRemaining'] as num?)?.toInt() ?? 0;
+    _restTotal = math.max(_restDuration, _pausedRestRemaining);
     _setEndsAt = null;
     _restEndsAt = null;
   }
@@ -566,6 +786,31 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
         'pausedRestRemaining': _pausedRestRemaining,
         'exercises': _exercises.map((e) => e.toJson()).toList(),
       };
+
+  /// Safety net: when the app goes to the background (call, app switch,
+  /// OS killing it) store the session so nothing is lost. It comes back
+  /// paused on the next launch, with the exact time left on the timers.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.paused &&
+        state != AppLifecycleState.detached) {
+      return;
+    }
+    if (!_started || _summary != null || _saving || _discarding) return;
+    if (_completedAutomatically) return;
+    final data = _stateJson()
+      ..['paused'] = true
+      ..['elapsedBeforeStart'] = _elapsedSeconds
+      ..['pausedSetRemaining'] = _paused
+          ? _pausedSetRemaining
+          : (_setRunning ? _setRemaining : 0)
+      ..['pausedRestRemaining'] = _paused
+          ? _pausedRestRemaining
+          : (_restRunning ? _restRemaining : 0);
+    unawaited(DatabaseService.instance
+        .saveActiveWorkout(jsonEncode(data))
+        .catchError((Object e) => debugPrint('Background save failed: $e')));
+  }
 
   Future<void> _persistPausedState() async {
     if (!_started || !_paused) return;
@@ -603,8 +848,12 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     if (_restRunning && _restEndsAt != null && !DateTime.now().isBefore(_restEndsAt!)) {
       _restRunning = false;
       _restEndsAt = null;
+      HapticFeedback.heavyImpact(); // rest over: you can feel it without looking
       _advanceToNextSet();
       _startCurrentSet();
+    } else if (_restRunning && _restEndsAt != null) {
+      final left = _restRemaining;
+      if (left > 0 && left <= 3) HapticFeedback.selectionClick();
     }
 
     if (mounted && _started && !_paused) setState(() {});
@@ -636,6 +885,62 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     if (_restEndsAt == null) return 0;
     final n = _restEndsAt!.difference(DateTime.now()).inMilliseconds;
     return n <= 0 ? 0 : (n / 1000).ceil();
+  }
+
+  /// While paused the end-times are cleared, so read the frozen values.
+  int get _shownSetRemaining => _paused ? _pausedSetRemaining : _setRemaining;
+  int get _shownRestRemaining => _paused ? _pausedRestRemaining : _restRemaining;
+
+  int get _totalSets => _exercises.fold<int>(0, (a, e) => a + e.sets.length);
+  int get _doneSets => _exercises.fold<int>(0, (a, e) => a + e.completedCount);
+
+  _NextUp? _nextUp() {
+    if (_exercises.isEmpty) return null;
+    final cur = _exercises[_currentExercise];
+    if (_currentSet + 1 < cur.sets.length) {
+      return (exercise: cur, setIndex: _currentSet + 1);
+    }
+    if (_currentExercise + 1 < _exercises.length) {
+      return (exercise: _exercises[_currentExercise + 1], setIndex: 0);
+    }
+    return null;
+  }
+
+  void _skipRest() {
+    if (!_restRunning || _paused || _saving) return;
+    _restEndsAt = DateTime.now();
+    _tick();
+  }
+
+  void _adjustRest(int delta) {
+    if (!_restRunning || _paused || _restEndsAt == null) return;
+    if (_restRemaining + delta <= 0) {
+      _skipRest();
+      return;
+    }
+    setState(() {
+      _restEndsAt = _restEndsAt!.add(Duration(seconds: delta));
+      if (_restRemaining > _restTotal) _restTotal = _restRemaining;
+    });
+  }
+
+  /// During rest the "current" set is still the one that was just finished,
+  /// so undoing = mark it not done and start it again.
+  void _undoLastSet() {
+    if (!_restRunning || _paused || _saving || _exercises.isEmpty) return;
+    final set = _exercises[_currentExercise].sets[_currentSet];
+    if (!set.completed) return;
+    set.completed = false;
+    HapticFeedback.lightImpact();
+    _restRunning = false;
+    _restEndsAt = null;
+    _startCurrentSet();
+  }
+
+  void _finishSetEarly() {
+    if (!_setRunning || _paused || _saving) return;
+    _finishCurrentSet();
+    if (mounted) setState(() {});
   }
 
   double _setProgress(CatalogExercise exercise, int target) {
@@ -742,6 +1047,19 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     if (mounted) setState(() {});
   }
 
+  /// Exercises sent from elsewhere (Home search, "repeat workout").
+  /// Opens the Build Custom Workout screen with them already in the list.
+  /// If a workout is running or the builder is already open, they are simply
+  /// added to what is there.
+  void _receiveExercises(List<CatalogExercise> exercises) {
+    if (_started || _buildingCustom) {
+      _addCatalogExercises(exercises);
+      return;
+    }
+    _beginCreateCustom();
+    _addCatalogExercises(exercises);
+  }
+
   void _addCatalogExercises(List<CatalogExercise> exercises) {
     final existing = _exercises.map((e) => e.catalog.name.toLowerCase()).toSet();
     for (final c in exercises) {
@@ -767,6 +1085,14 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
   void _startWorkout() {
     if (_exercises.isEmpty) {
       _pickExercises();
+      return;
+    }
+    // A workout can never start without a name, whichever button was used.
+    if (_nameController.text.trim().isEmpty) {
+      if (_buildingCustom) setState(() => _nameMissing = true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Give your workout a name before starting.')),
+      );
       return;
     }
     setState(() {
@@ -850,6 +1176,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     final exercise = _exercises[_currentExercise];
     final set = exercise.sets[_currentSet];
     set.completed = true;
+    HapticFeedback.mediumImpact();
     _setRunning = false;
     _setEndsAt = null;
     _liveReps = set.target;
@@ -875,6 +1202,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     final duration = seconds ?? _restDuration;
     setState(() {
       _restDuration = duration;
+      _restTotal = duration;
       _restRunning = true;
       _restEndsAt = DateTime.now().add(Duration(seconds: duration));
       _pausedRestRemaining = 0;
@@ -896,7 +1224,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     _liveReps = 0;
   }
 
-  Future<void> _saveCompletedWorkout() async {
+  Future<void> _saveCompletedWorkout({bool partial = false}) async {
     if (_saving || !mounted || _exercises.isEmpty) return;
     setState(() => _saving = true);
 
@@ -944,9 +1272,15 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
         Workout(
           name: workoutName.isEmpty ? 'My Workout' : workoutName,
           date: _workoutStartedDate ?? DateTime.now(),
-          notes: _notesController.text.trim().isEmpty
-              ? null
-              : _notesController.text.trim(),
+          notes: () {
+            final userNotes = _notesController.text.trim();
+            final doneSets = items.fold<int>(0, (a, i) => a + i.sets.length);
+            final lines = [
+              if (userNotes.isNotEmpty) userNotes,
+              if (partial) 'Ended early · $doneSets of $_totalSets sets',
+            ];
+            return lines.isEmpty ? null : lines.join('\n');
+          }(),
           durationSeconds: _elapsedSeconds,
           isSuggested: _isSuggestedWorkout,
         ),
@@ -961,6 +1295,8 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
         items.length,
         items.fold<int>(0, (sum, item) => sum + item.sets.length),
         _elapsedSeconds,
+        totalSets: _totalSets,
+        partial: partial,
       );
 
       _ticker?.cancel();
@@ -1011,32 +1347,57 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     widget.onSaved?.call(); // refresh dashboard + go to Home tab
   }
 
-  Future<bool> _discardWorkout() async {
-    if (_saving || _discarding) return false;
-    if (!_started) return true;
-    final confirmed = await showDialog<bool>(
+  /// Leaving mid-workout: finished sets are never thrown away silently.
+  Future<void> _leaveFromActiveWorkout() async {
+    if (_saving || _discarding) return;
+    final done = _doneSets;
+
+    final choice = await showDialog<_LeaveChoice>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: kSurface,
-        title: const Text('Leave workout?', style: TextStyle(color: Colors.white)),
-        content: const Text('Your current workout progress will be reset to 0. This workout will not be saved.', style: TextStyle(color: Colors.grey)),
+        title: Text(
+          done > 0 ? 'End workout?' : 'Leave workout?',
+          style: const TextStyle(color: Colors.white),
+        ),
+        content: Text(
+          done > 0
+              ? "You've finished $done of $_totalSets sets in ${_clock(_elapsedSeconds)}. "
+                  'Save your progress so that work counts.'
+              : "You haven't finished any sets yet, so there's nothing to save.",
+          style: TextStyle(color: Colors.grey[400], height: 1.35),
+        ),
+        actionsOverflowAlignment: OverflowBarAlignment.end,
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Stay')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Leave & Reset')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, _LeaveChoice.stay),
+            child: const Text('Keep going'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, _LeaveChoice.discard),
+            style: TextButton.styleFrom(foregroundColor: Colors.grey),
+            child: Text(done > 0 ? 'Discard' : 'Leave'),
+          ),
+          if (done > 0)
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, _LeaveChoice.save),
+              child: const Text('Save progress'),
+            ),
         ],
       ),
     );
-    if (confirmed != true) return false;
+    if (!mounted || choice == null || choice == _LeaveChoice.stay) return;
+
+    if (choice == _LeaveChoice.save) {
+      await _endEarlyAndSave();
+      return;
+    }
+
+    // Discard
     _discarding = true;
     await DatabaseService.instance.clearActiveWorkout();
     widget.onSessionChanged?.call(false);
-    return true;
-  }
-
-  Future<void> _leaveFromActiveWorkout() async {
-    if (_saving || _discarding) return;
-    final leave = await _discardWorkout();
-    if (!leave || !mounted) return;
+    if (!mounted) return;
 
     _ticker?.cancel();
     _started = false;
@@ -1064,102 +1425,524 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     setState(() {});
   }
 
-  Widget _timerCard() {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(color: kSurface, borderRadius: BorderRadius.circular(22)),
+  /// Saves only the sets that were actually completed, then shows the summary.
+  Future<void> _endEarlyAndSave() async {
+    if (_doneSets == 0 || _saving) return;
+
+    // Freeze everything so no timer can complete another set mid-save.
+    setState(() {
+      _completedAutomatically = true;
+      _elapsedBeforeStart = _elapsedSeconds;
+      _startedAt = null;
+      _setRunning = false;
+      _restRunning = false;
+      _setEndsAt = null;
+      _restEndsAt = null;
+    });
+    _ticker?.cancel();
+    _ticker = null;
+
+    await _saveCompletedWorkout(partial: true);
+
+    // Save failed (the success path leaves the summary showing): pick the
+    // session back up instead of leaving a dead screen.
+    if (mounted && _summary == null && _started) {
+      setState(() {
+        _paused = false;
+        _startedAt = DateTime.now();
+      });
+      _startTicker();
+      _startCurrentSet();
+    }
+  }
+
+  // ─────────────────────── Live session UI ───────────────────────
+  // Designed to be read at arm's length mid-set:
+  //  • one huge number (reps or countdown) in a progress ring
+  //  • colour = phase (red work, blue rest, amber paused)
+  //  • thumb-sized controls pinned to the bottom of the screen
+
+  Color get _phaseColor =>
+      _paused ? _kPausedColor : (_restRunning ? _kRestColor : kAccent);
+
+  static const _tabular = [FontFeature.tabularFigures()];
+
+  Widget _sessionHeader() {
+    final total = _totalSets;
+    final done = _doneSets;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
       child: Column(
         children: [
-          Text('WORKOUT TIME', style: TextStyle(color: Colors.grey[500], fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.2)),
-          const SizedBox(height: 4),
-          Text(_clock(_elapsedSeconds), style: const TextStyle(color: Colors.white, fontSize: 38, fontWeight: FontWeight.w900)),
+          Row(
+            children: [
+              Icon(Icons.timer_outlined, size: 20, color: Colors.grey[500]),
+              const SizedBox(width: 6),
+              Text(
+                _clock(_elapsedSeconds),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  fontFeatures: _tabular,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '$done of $total sets done',
+                style: TextStyle(
+                  color: Colors.grey[400],
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: _togglePause,
-            icon: Icon(_paused ? Icons.play_arrow_rounded : Icons.pause_rounded),
-            label: Text(_paused ? 'Resume Workout' : 'Pause Workout'),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              value: total == 0 ? 0 : done / total,
+              minHeight: 8,
+              backgroundColor: kSurface,
+              valueColor: AlwaysStoppedAnimation<Color>(_phaseColor),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _activeExerciseCard() {
-    final exercise = _exercises[_currentExercise];
-    final set = exercise.sets[_currentSet];
-    final target = set.target;
-    final isLastSet = _currentSet == exercise.sets.length - 1;
-    final completedSets = exercise.completedCount;
-    final total = exercise.sets.length;
-
+  Widget _phaseChip(String label, Color color) {
     return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(color: kSurface, borderRadius: BorderRadius.circular(24)),
-      child: Column(
-        children: [
-          Text('EXERCISE ${_currentExercise + 1} OF ${_exercises.length}', style: TextStyle(color: Colors.grey[500], fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.1)),
-          const SizedBox(height: 12),
-          Container(width: 64, height: 64, decoration: BoxDecoration(color: kAccent.withValues(alpha: .14), borderRadius: BorderRadius.circular(18)), child: Icon(exercise.catalog.equipment.icon, color: kAccent, size: 32)),
-          const SizedBox(height: 12),
-          Text(exercise.catalog.name, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w900)),
-          const SizedBox(height: 4),
-          Text(exercise.catalog.subtitle, style: TextStyle(color: Colors.grey[500])),
-          const SizedBox(height: 18),
-          Text('SET ${_currentSet + 1} OF $total', style: TextStyle(color: Colors.grey[400], fontWeight: FontWeight.w800)),
-          const SizedBox(height: 8),
-          Text(_targetLabel(exercise.catalog, target), style: const TextStyle(color: kAccent, fontSize: 26, fontWeight: FontWeight.w900)),
-          const SizedBox(height: 4),
-          Text(_targetTitle(exercise.catalog), style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-          const SizedBox(height: 24),
-          if (_setRunning) ...[
-            Text(
-              exercise.catalog.kind == ExerciseKind.strength ? '$_liveReps / $target reps' : _clock(_setRemaining),
-              style: const TextStyle(color: Colors.white, fontSize: 44, fontWeight: FontWeight.w900),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .16),
+        borderRadius: BorderRadius.circular(30),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 14,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 1.6,
+        ),
+      ),
+    );
+  }
+
+  Widget _ring({
+    required double size,
+    required double progress,
+    required Color color,
+    required Widget child,
+  }) {
+    return SizedBox(
+      width: size,
+      height: size,
+      child: CustomPaint(
+        painter: _RingPainter(
+          progress: progress.clamp(0.0, 1.0).toDouble(),
+          color: color,
+          track: Colors.white.withValues(alpha: .08),
+          stroke: size * 0.065,
+        ),
+        child: Center(child: child),
+      ),
+    );
+  }
+
+  Widget _setSegments(_ActiveExercise ex) {
+    return Wrap(
+      alignment: WrapAlignment.center,
+      runSpacing: 6,
+      children: [
+        for (var i = 0; i < ex.sets.length; i++)
+          Container(
+            width: 30,
+            height: 8,
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(4),
+              color: ex.sets[i].completed
+                  ? kAccent
+                  : (i == _currentSet
+                      ? Colors.white
+                      : Colors.white.withValues(alpha: .15)),
             ),
-            const SizedBox(height: 8),
-            Text(
-              exercise.catalog.kind == ExerciseKind.strength
-                  ? 'Guided rep timer · one rep every $_repPaceSeconds seconds'
-                  : 'Keep going until the timer reaches zero',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey[500], fontSize: 12),
-            ),
-            const SizedBox(height: 18),
-            LinearProgressIndicator(
-              value: exercise.catalog.kind == ExerciseKind.strength
-                  ? (target == 0 ? 0 : (_liveReps / target).clamp(0.0, 1.0))
-                  : _setProgress(exercise.catalog, target),
-              minHeight: 7,
-              backgroundColor: kBackground,
-              valueColor: const AlwaysStoppedAnimation<Color>(kAccent),
-            ),
-          ] else if (_restRunning) ...[
-            Text('REST', style: TextStyle(color: Colors.grey[500], fontWeight: FontWeight.w800, letterSpacing: 1.2)),
-            const SizedBox(height: 4),
-            Text(_clock(_restRemaining), style: const TextStyle(color: kAccent, fontSize: 48, fontWeight: FontWeight.w900)),
-            const SizedBox(height: 8),
-            Text('Next set starts automatically', style: TextStyle(color: Colors.grey[500], fontSize: 12)),
-          ] else if (set.completed) ...[
-            const Icon(Icons.check_circle_rounded, color: kAccent, size: 52),
-            const SizedBox(height: 8),
-            const Text('Set complete', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
-          ] else ...[
-            const SizedBox(height: 8),
-            const Text('Preparing next set...', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800)),
-          ],
-          const SizedBox(height: 18),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              for (var i = 0; i < total; i++)
-                Container(width: 9, height: 9, margin: const EdgeInsets.symmetric(horizontal: 3), decoration: BoxDecoration(shape: BoxShape.circle, color: i < completedSets ? kAccent : i == _currentSet ? Colors.white : Colors.grey[700])),
-            ],
           ),
-          if (isLastSet && exercise.completedCount == total && _currentExercise < _exercises.length - 1)
-            Padding(padding: const EdgeInsets.only(top: 12), child: Text('Next: ${_exercises[_currentExercise + 1].catalog.name}', style: TextStyle(color: Colors.grey[500], fontSize: 12))),
+      ],
+    );
+  }
+
+  /// Work phase: exercise name, giant rep / time number, set position.
+  Widget _workStage(BoxConstraints c) {
+    final ex = _exercises[_currentExercise];
+    final set = ex.sets[_currentSet];
+    final target = set.target;
+    final kind = ex.catalog.kind;
+    final ring =
+        math.min(c.maxWidth - 48, c.maxHeight - 215).clamp(160.0, 340.0).toDouble();
+
+    final progress = !_setRunning
+        ? 0.0
+        : kind == ExerciseKind.strength
+            ? (target == 0 ? 0.0 : _liveReps / target)
+            : _setProgress(ex.catalog, target);
+
+    final Widget center;
+    if (kind == ExerciseKind.strength) {
+      center = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$_liveReps',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: ring * .42,
+              height: 1,
+              fontWeight: FontWeight.w900,
+              fontFeatures: _tabular,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'of $target reps',
+            style: TextStyle(
+              color: Colors.grey[400],
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      );
+    } else {
+      final seconds = _setRunning
+          ? _shownSetRemaining
+          : _durationForSet(ex.catalog, target).inSeconds;
+      center = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            _clock(seconds),
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: ring * .27,
+              height: 1,
+              fontWeight: FontWeight.w900,
+              fontFeatures: _tabular,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'remaining',
+            style: TextStyle(
+              color: Colors.grey[400],
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      );
+    }
+
+    final chipLabel = _paused
+        ? 'PAUSED'
+        : (_saving || _completedAutomatically)
+            ? 'SAVING'
+            : (_setRunning ? 'WORK' : 'GET READY');
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _phaseChip(chipLabel, _phaseColor),
+        const SizedBox(height: 14),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Text(
+            ex.catalog.name,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 30,
+              height: 1.1,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          ex.catalog.subtitle,
+          style: TextStyle(color: Colors.grey[500], fontSize: 15),
+        ),
+        const SizedBox(height: 18),
+        _ring(size: ring, progress: progress, color: _phaseColor, child: center),
+        const SizedBox(height: 18),
+        Text(
+          'SET ${_currentSet + 1} OF ${ex.sets.length}  ·  ${_targetLabel(ex.catalog, target)}',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            letterSpacing: .5,
+          ),
+        ),
+        const SizedBox(height: 10),
+        _setSegments(ex),
+      ],
+    );
+  }
+
+  /// Rest phase: big countdown, quick +/- adjust, and what's coming next.
+  Widget _restStage(BoxConstraints c) {
+    final next = _nextUp();
+    final remaining = _shownRestRemaining;
+    final total = math.max(_restTotal, remaining);
+    final ring =
+        math.min(c.maxWidth - 80, c.maxHeight - 250).clamp(150.0, 300.0).toDouble();
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _phaseChip(_paused ? 'PAUSED' : 'REST', _phaseColor),
+        const SizedBox(height: 18),
+        _ring(
+          size: ring,
+          progress: total == 0 ? 0 : remaining / total,
+          color: _phaseColor,
+          child: Text(
+            _clock(remaining),
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: ring * .30,
+              height: 1,
+              fontWeight: FontWeight.w900,
+              fontFeatures: _tabular,
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _restAdjustButton('−15s', () => _adjustRest(-15)),
+            const SizedBox(width: 12),
+            _restAdjustButton('+15s', () => _adjustRest(15)),
+          ],
+        ),
+        const SizedBox(height: 6),
+        TextButton.icon(
+          onPressed: _paused ? null : _undoLastSet,
+          icon: const Icon(Icons.undo_rounded, size: 20),
+          label: const Text(
+            'Undo last set',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+          ),
+          style: TextButton.styleFrom(
+            foregroundColor: Colors.grey[400],
+            minimumSize: const Size(48, 48),
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (next != null) _upNextCard(next),
+      ],
+    );
+  }
+
+  Widget _restAdjustButton(String label, VoidCallback onTap) {
+    return OutlinedButton(
+      onPressed: _paused ? null : onTap,
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(96, 48),
+        shape: const StadiumBorder(),
+        side: const BorderSide(color: Colors.white24),
+        foregroundColor: Colors.white,
+        textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+      ),
+      child: Text(label),
+    );
+  }
+
+  Widget _upNextCard(_NextUp next) {
+    final ex = next.exercise;
+    final target = ex.sets[next.setIndex].target;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: kSurface,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'UP NEXT',
+            style: TextStyle(
+              color: Colors.grey[500],
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.4,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            ex.catalog.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Set ${next.setIndex + 1} of ${ex.sets.length}  ·  ${_targetLabel(ex.catalog, target)}',
+            style: const TextStyle(
+              color: kAccent,
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
         ],
       ),
     );
+  }
+
+  /// Slim "what's next" line shown during work (rest has its own big card).
+  Widget _upNextStrip() {
+    if (_restRunning) return const SizedBox.shrink();
+    final next = _nextUp();
+    final text = next == null
+        ? 'Last set — finish strong'
+        : '${next.exercise.catalog.name} · set ${next.setIndex + 1} of ${next.exercise.sets.length}';
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: kSurface,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Text(
+            'NEXT',
+            style: TextStyle(
+              color: Colors.grey[500],
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Big thumb-reach controls pinned to the bottom.
+  Widget _controlBar() {
+    final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(20));
+    final Widget row;
+
+    if (_paused) {
+      row = SizedBox(
+        width: double.infinity,
+        height: 68,
+        child: FilledButton.icon(
+          onPressed: _saving ? null : _togglePause,
+          style: FilledButton.styleFrom(shape: shape),
+          icon: const Icon(Icons.play_arrow_rounded, size: 32),
+          label: const Text(
+            'Resume',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+          ),
+        ),
+      );
+    } else {
+      final inRest = _restRunning;
+      row = Row(
+        children: [
+          Tooltip(
+            message: 'Pause workout',
+            child: SizedBox(
+              width: 68,
+              height: 68,
+              child: OutlinedButton(
+                onPressed: _saving ? null : _togglePause,
+                style: OutlinedButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  shape: shape,
+                  side: const BorderSide(color: Colors.white24),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Icon(Icons.pause_rounded, size: 32),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: inRest
+                ? SizedBox(
+                    height: 68,
+                    child: FilledButton.icon(
+                      onPressed: _saving ? null : _skipRest,
+                      style: FilledButton.styleFrom(
+                        shape: shape,
+                        backgroundColor: _kRestColor,
+                        foregroundColor: Colors.black,
+                      ),
+                      icon: const Icon(Icons.skip_next_rounded, size: 30),
+                      label: const Text(
+                        'Skip rest',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                  )
+                : _HoldToConfirmButton(
+                    label: 'Hold to finish set',
+                    icon: Icons.check_rounded,
+                    color: kAccent,
+                    onConfirmed:
+                        (_saving || !_setRunning || _paused) ? null : _finishSetEarly,
+                  ),
+          ),
+        ],
+      );
+    }
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+        child: row,
+      ),
+    );
+  }
+
+  Future<void> _pickCustomRest() async {
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (_) => _CustomRestDialog(initialSeconds: _restDuration),
+    );
+    if (picked != null && mounted) setState(() => _restDuration = picked);
   }
 
   Widget _restSettings() {
@@ -1172,13 +1955,22 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
         Text('Choose before starting. This stays locked during the workout.', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
         const SizedBox(height: 10),
         Wrap(spacing: 6, runSpacing: 6, children: [
-          for (final seconds in const [30, 60, 90, 120, 180])
+          for (final seconds in _restPresets)
             ChoiceChip(
-              label: Text(seconds >= 60 ? '${seconds ~/ 60}m' : '${seconds}s'),
+              label: Text(_restLabel(seconds)),
               selected: _restDuration == seconds,
               onSelected: (_) => setState(() => _restDuration = seconds),
               selectedColor: kAccent,
             ),
+          ChoiceChip(
+            avatar: const Icon(Icons.edit_rounded, size: 15),
+            label: Text(
+              _restPresets.contains(_restDuration) ? 'Custom' : _restLabel(_restDuration),
+            ),
+            selected: !_restPresets.contains(_restDuration),
+            onSelected: (_) => _pickCustomRest(),
+            selectedColor: kAccent,
+          ),
         ]),
       ]),
     );
@@ -1381,6 +2173,12 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
       ('Full Body', 'Major muscle groups', ['Squat', 'Bench Press', 'Barbell Row', 'Plank']),
     ];
 
+    // The card has a 112px image plus a text area. Text grows with the phone's
+    // font-size setting, so the card height must grow with it too (that is what
+    // caused "bottom overflowed by 1.00 pixels"). 156 = text area + small cushion.
+    final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
+    final cardHeight = 112 + 156 * (textScale < 1 ? 1.0 : textScale);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1398,11 +2196,11 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           itemCount: suggestions.length,
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 2,
             crossAxisSpacing: 12,
             mainAxisSpacing: 12,
-            mainAxisExtent: 264,
+            mainAxisExtent: cardHeight,
           ),
           itemBuilder: (context, index) {
             final item = suggestions[index];
@@ -1501,7 +2299,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(template.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
                   const SizedBox(height: 4),
-                  Text('${template.exercises.length} exercises · ${template.restSeconds}s rest', style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                  Text('${template.exercises.length} exercises · ${_restLabel(template.restSeconds)} rest', style: TextStyle(color: Colors.grey[500], fontSize: 12)),
                   const SizedBox(height: 9),
                   Wrap(spacing: 6, children: [
                     OutlinedButton.icon(onPressed: () => _editCustom(template), icon: const Icon(Icons.edit_outlined, size: 15), label: const Text('Edit')),
@@ -1520,8 +2318,11 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
     return ListView(padding: const EdgeInsets.fromLTRB(20, 4, 20, 28), children: [
       TextField(
         controller: _nameController,
+        onChanged: (_) {
+          if (_nameMissing) setState(() => _nameMissing = false);
+        },
         style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
-        decoration: InputDecoration(labelText: 'Workout name', labelStyle: const TextStyle(color: Colors.grey), hintText: 'e.g. Monday Push Day', hintStyle: TextStyle(color: Colors.grey[700]), filled: true, fillColor: kSurface, border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none)),
+        decoration: InputDecoration(errorText: _nameMissing ? 'Give your workout a name' : null, labelText: 'Workout name', labelStyle: const TextStyle(color: Colors.grey), hintText: 'e.g. Monday Push Day', hintStyle: TextStyle(color: Colors.grey[700]), filled: true, fillColor: kSurface, border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none)),
       ),
       const SizedBox(height: 14),
       if (_exercises.isEmpty)
@@ -1547,7 +2348,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
         Row(children: [
           Expanded(child: OutlinedButton.icon(onPressed: _saveCustomTemplate, icon: const Icon(Icons.save_outlined), label: Text(_editingCustomId == null ? 'Save Custom' : 'Update Custom'))),
           const SizedBox(width: 10),
-          Expanded(child: FilledButton.icon(onPressed: () async { await _saveCustomTemplate(); if (mounted) _startWorkout(); }, icon: const Icon(Icons.play_arrow_rounded), label: const Text('Start Workout'))),
+          Expanded(child: FilledButton.icon(onPressed: () async { final saved = await _saveCustomTemplate(); if (saved && mounted) _startWorkout(); }, icon: const Icon(Icons.play_arrow_rounded), label: const Text('Start Workout'))),
         ]),
       ],
     ]);
@@ -1608,7 +2409,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
                   const SizedBox(width: 10),
                   _overviewStat('$totalSets', 'Total sets'),
                   const SizedBox(width: 10),
-                  _overviewStat('${_restDuration}s', 'Rest'),
+                  _overviewStat(_restLabel(_restDuration), 'Rest'),
                 ],
               ),
             ],
@@ -1763,7 +2564,7 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
                   const SizedBox(width: 10),
                   _overviewStat('$totalSets', 'Total sets'),
                   const SizedBox(width: 10),
-                  _overviewStat('${_restDuration}s', 'Rest'),
+                  _overviewStat(_restLabel(_restDuration), 'Rest'),
                 ],
               ),
             ],
@@ -1881,12 +2682,17 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
             const Spacer(),
             const Icon(Icons.check_circle_rounded, size: 88, color: kAccent),
             const SizedBox(height: 16),
-            const Text(
-              'Workout Complete!',
-              style: TextStyle(color: Colors.white, fontSize: 25, fontWeight: FontWeight.w900),
+            Text(
+              s.partial ? 'Progress Saved' : 'Workout Complete!',
+              style: const TextStyle(color: Colors.white, fontSize: 25, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 6),
-            Text(s.name, style: TextStyle(color: Colors.grey[500])),
+            Text(
+              s.partial && s.totalSets > 0
+                  ? '${s.name} · ${s.sets} of ${s.totalSets} sets'
+                  : s.name,
+              style: TextStyle(color: Colors.grey[500]),
+            ),
             const SizedBox(height: 26),
             Row(
               children: [
@@ -2029,11 +2835,26 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
   }
 
   Widget _activeView() {
-    return ListView(padding: const EdgeInsets.fromLTRB(16, 12, 16, 110), children: [
-      _timerCard(),
-      const SizedBox(height: 12),
-      _activeExerciseCard(),
-    ]);
+    if (_exercises.isEmpty) return const SizedBox.shrink();
+    return Column(
+      children: [
+        _sessionHeader(),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, c) => SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: c.maxHeight),
+                child: Center(
+                  child: _restRunning ? _restStage(c) : _workStage(c),
+                ),
+              ),
+            ),
+          ),
+        ),
+        _upNextStrip(),
+        _controlBar(),
+      ],
+    );
   }
 
   @override
@@ -2055,13 +2876,23 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
         appBar: AppBar(
           backgroundColor: kBackground,
           automaticallyImplyLeading: false,
+          // The "Leave" text button is wider than the app bar's default 56px
+          // leading slot, which is what drew the red/striped overflow mess.
+          leadingWidth: (_summary == null && _started) ? 108 : null,
           leading: _summary != null
               ? null
               : (_started
-                  ? TextButton.icon(
-                      onPressed: (_saving || _discarding) ? null : _leaveFromActiveWorkout,
-                      icon: const Icon(Icons.arrow_back_rounded, size: 19),
-                      label: const Text('Leave'),
+                  ? Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: (_saving || _discarding) ? null : _leaveFromActiveWorkout,
+                        icon: const Icon(Icons.arrow_back_rounded, size: 19),
+                        label: const Text('Leave'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                        ),
+                      ),
                     )
                   : (_buildingCustom
                       ? IconButton(
@@ -2106,6 +2937,100 @@ class _LogWorkoutPageState extends State<LogWorkoutPage> {
             ? _summaryView()
             : (_started ? _activeView() : _setupView()),
       ),
+    );
+  }
+}
+
+
+class _CustomRestDialog extends StatefulWidget {
+  final int initialSeconds;
+  const _CustomRestDialog({required this.initialSeconds});
+
+  @override
+  State<_CustomRestDialog> createState() => _CustomRestDialogState();
+}
+
+class _CustomRestDialogState extends State<_CustomRestDialog> {
+  late final TextEditingController _minutes =
+      TextEditingController(text: '${widget.initialSeconds ~/ 60}');
+  late final TextEditingController _seconds =
+      TextEditingController(text: '${widget.initialSeconds % 60}');
+  String? _error;
+
+  @override
+  void dispose() {
+    _minutes.dispose();
+    _seconds.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final m = int.tryParse(_minutes.text.trim()) ?? 0;
+    final s = int.tryParse(_seconds.text.trim()) ?? 0;
+    final total = m * 60 + s;
+    if (total < _minCustomRestSeconds || total > _maxCustomRestSeconds) {
+      setState(() => _error = 'Enter between 10 seconds and 30 minutes.');
+      return;
+    }
+    Navigator.pop(context, total);
+  }
+
+  Widget _field(TextEditingController controller, String label) {
+    return Expanded(
+      child: TextField(
+        controller: controller,
+        keyboardType: TextInputType.number,
+        inputFormatters: [
+          FilteringTextInputFormatter.digitsOnly,
+          LengthLimitingTextInputFormatter(2),
+        ],
+        textAlign: TextAlign.center,
+        style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800),
+        onChanged: (_) {
+          if (_error != null) setState(() => _error = null);
+        },
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: Colors.grey),
+          filled: true,
+          fillColor: kBackground,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: BorderSide.none,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: kSurface,
+      title: const Text('Custom rest time', style: TextStyle(color: Colors.white)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            _field(_minutes, 'Minutes'),
+            const SizedBox(width: 12),
+            _field(_seconds, 'Seconds'),
+          ]),
+          const SizedBox(height: 10),
+          Text(
+            _error ?? 'Rest between each set, from 10 seconds up to 30 minutes.',
+            style: TextStyle(
+              color: _error == null ? Colors.grey[500] : Colors.redAccent,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(onPressed: _submit, child: const Text('Set')),
+      ],
     );
   }
 }

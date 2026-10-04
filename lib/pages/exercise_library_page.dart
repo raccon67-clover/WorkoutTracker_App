@@ -1,12 +1,28 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../data/exercise_catalog.dart';
 import '../main.dart' show kBackground, kSurface, kAccent;
+import '../services/database_service.dart';
 import '../services/exercise_library_service.dart';
 
 class ExerciseLibraryPage extends StatefulWidget {
   final ValueChanged<List<CatalogExercise>>? onAddToLog;
-  const ExerciseLibraryPage({super.key, this.onAddToLog});
+
+  /// When true, the library is just for looking things up: no "add to log"
+  /// buttons or selection bar.
+  final bool browseOnly;
+
+  /// Called with the id of one of the person's saved custom workouts when they
+  /// tap Start on it in the search results.
+  final ValueChanged<String>? onOpenCustom;
+
+  const ExerciseLibraryPage({
+    super.key,
+    this.onAddToLog,
+    this.browseOnly = false,
+    this.onOpenCustom,
+  });
 
   @override
   State<ExerciseLibraryPage> createState() => _ExerciseLibraryPageState();
@@ -17,6 +33,7 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
   Timer? _debounce;
   List<RemoteExercise> _remote = [];
   List<CatalogExercise> _local = [];
+  List<_SavedWorkout> _saved = [];
   bool _loading = true;
   String _query = '';
   final Set<CatalogExercise> _selected = {};
@@ -31,7 +48,35 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
   void initState() {
     super.initState();
     _load();
+    _loadSaved();
     _controller.addListener(_onSearchChanged);
+  }
+
+  Future<void> _loadSaved() async {
+    try {
+      final raw = await DatabaseService.instance.getCustomWorkouts();
+      if (raw == null || raw.isEmpty) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return;
+
+      final items = <_SavedWorkout>[];
+      for (final item in decoded.whereType<Map>()) {
+        final id = item['id']?.toString() ?? '';
+        final name = item['name']?.toString().trim() ?? '';
+        if (id.isEmpty || name.isEmpty) continue;
+        final list = item['exercises'] is List ? item['exercises'] as List : const [];
+        final names = <String>[
+          for (final e in list.whereType<Map>())
+            if (e['name'] != null) e['name'].toString(),
+        ];
+        items.add(_SavedWorkout(id, name, names));
+      }
+
+      if (!mounted) return;
+      setState(() => _saved = items);
+    } catch (e) {
+      debugPrint('Saved workouts load failed: $e');
+    }
   }
 
   Future<void> _load() async {
@@ -103,7 +148,24 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
   }
 
   void _openDetails(RemoteExercise? remote, CatalogExercise c) {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => ExerciseInfoPage(catalog: c, remote: remote)));
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ExerciseInfoPage(
+          catalog: c,
+          remote: remote,
+          onAdd: widget.onAddToLog == null
+              ? null
+              : () {
+                  // The info page has already closed itself; now close the
+                  // library and hand the exercise to the Log tab.
+                  if (!mounted) return;
+                  Navigator.pop(context);
+                  widget.onAddToLog!([c]);
+                },
+        ),
+      ),
+    );
   }
 
   @override
@@ -114,6 +176,13 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
       final hay = '${t.name} ${t.exerciseNames.join(' ')}'.toLowerCase();
       return hay.contains(_query.toLowerCase());
     }).toList();
+    final matchingSaved = widget.onOpenCustom == null
+        ? const <_SavedWorkout>[]
+        : _saved.where((w) {
+            if (_query.isEmpty) return true;
+            final hay = '${w.name} ${w.exerciseNames.join(' ')}'.toLowerCase();
+            return hay.contains(_query.toLowerCase());
+          }).toList();
     return Scaffold(
       backgroundColor: kBackground,
       appBar: AppBar(
@@ -152,6 +221,10 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
               : ListView(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 30),
                   children: [
+                    if (matchingSaved.isNotEmpty) ...[
+                      _heading('My Workouts'),
+                      ...matchingSaved.map(_savedCard),
+                    ],
                     if (matchingTemplates.isNotEmpty) ...[
                       _heading('Workouts'),
                       ...matchingTemplates.map(_templateCard),
@@ -167,7 +240,7 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
                       _heading(_remote.isNotEmpty ? 'More exercises' : 'Exercises'),
                       ..._local.map((c) => _localCard(c)),
                     ],
-                    if (showRemote.isEmpty && _local.isEmpty)
+                    if (showRemote.isEmpty && _local.isEmpty && matchingTemplates.isEmpty && matchingSaved.isEmpty)
                       const Padding(padding: EdgeInsets.all(30), child: Center(child: Text('No exercises found.', style: TextStyle(color: Colors.grey)))),
                     const SizedBox(height: 20),
                     const Text('Exercise data by RepDB (repdb.co)', style: TextStyle(color: Colors.grey, fontSize: 11), textAlign: TextAlign.center),
@@ -200,7 +273,46 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
           const SizedBox(height: 4),
           Text('${exercises.length} exercises · ${t.exerciseNames.join(', ')}', maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.grey[500], fontSize: 12)),
         ])),
-        IconButton(onPressed: exercises.isEmpty ? null : () { setState(() { _selected.addAll(exercises); }); }, icon: const Icon(Icons.add_circle_outline, color: Colors.white70)),
+        if (!widget.browseOnly)
+        IconButton(onPressed: exercises.isEmpty ? null : () { setState(() { _selected.addAll(exercises); }); }, icon: const Icon(Icons.add_circle_outline, color: Colors.white70))
+        else if (widget.onAddToLog != null)
+        // Opened from the Home search: send the whole workout to the Log tab.
+        FilledButton(
+          onPressed: exercises.isEmpty
+              ? null
+              : () {
+                  widget.onAddToLog!(exercises);
+                  Navigator.pop(context);
+                },
+          style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+          child: const Text('Use'),
+        ),
+      ]),
+    );
+  }
+
+  Widget _savedCard(_SavedWorkout w) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(color: kSurface, borderRadius: BorderRadius.circular(16)),
+      child: Row(children: [
+        Container(width: 52, height: 52, decoration: BoxDecoration(color: kAccent.withValues(alpha: .14), borderRadius: BorderRadius.circular(14)), child: const Icon(Icons.bookmark_rounded, color: kAccent)),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(w.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          Text('${w.exerciseNames.length} exercises · ${w.exerciseNames.join(', ')}', maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+        ])),
+        const SizedBox(width: 8),
+        FilledButton(
+          onPressed: () {
+            widget.onOpenCustom!(w.id);
+            Navigator.pop(context);
+          },
+          style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+          child: const Text('Start'),
+        ),
       ]),
     );
   }
@@ -227,6 +339,8 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(color: kSurface, borderRadius: BorderRadius.circular(16)),
       child: ListTile(
+        onTap: onInfo,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         contentPadding: const EdgeInsets.all(10),
         leading: ClipRRect(
           borderRadius: BorderRadius.circular(12),
@@ -236,6 +350,7 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
         subtitle: Padding(padding: const EdgeInsets.only(top: 4), child: Text(subtitle, style: TextStyle(color: Colors.grey[500], fontSize: 12))),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
           IconButton(onPressed: onInfo, icon: const Icon(Icons.info_outline, color: Colors.white70)),
+          if (!widget.browseOnly)
           IconButton(onPressed: () => _toggle(c), icon: Icon(selected ? Icons.check_circle : Icons.add_circle_outline, color: selected ? kAccent : Colors.white70)),
         ]),
       ),
@@ -245,10 +360,22 @@ class _ExerciseLibraryPageState extends State<ExerciseLibraryPage> {
   String _title(String value) => value.replaceAll('_', ' ').split(' ').map((p) => p.isEmpty ? p : '${p[0].toUpperCase()}${p.substring(1)}').join(' ');
 }
 
+class _SavedWorkout {
+  final String id;
+  final String name;
+  final List<String> exerciseNames;
+  const _SavedWorkout(this.id, this.name, this.exerciseNames);
+}
+
 class ExerciseInfoPage extends StatelessWidget {
   final CatalogExercise catalog;
   final RemoteExercise? remote;
-  const ExerciseInfoPage({super.key, required this.catalog, required this.remote});
+
+  /// When set, the page shows an "Add to workout" button. It closes this page
+  /// and then calls [onAdd].
+  final VoidCallback? onAdd;
+
+  const ExerciseInfoPage({super.key, required this.catalog, required this.remote, this.onAdd});
 
   @override
   Widget build(BuildContext context) {
@@ -272,7 +399,17 @@ class ExerciseInfoPage extends StatelessWidget {
         ...List.generate(instructions.length, (i) => Padding(padding: const EdgeInsets.only(bottom: 12), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [CircleAvatar(radius: 13, backgroundColor: kAccent, child: Text('${i + 1}', style: const TextStyle(fontSize: 12, color: Colors.white))), const SizedBox(width: 12), Expanded(child: Text(instructions[i], style: TextStyle(color: Colors.grey[300], height: 1.4)))]))),
         if (tips.isNotEmpty) ...[const SizedBox(height: 10), const Text('FORM TIPS', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: .7)), const SizedBox(height: 10), ...tips.map((t) => Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('•  ', style: TextStyle(color: kAccent)), Expanded(child: Text(t, style: TextStyle(color: Colors.grey[300])))])))],
         const SizedBox(height: 26),
-        ElevatedButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.check), label: const Text('Got it')),
+        if (onAdd != null)
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              onAdd!();
+            },
+            icon: const Icon(Icons.add_rounded),
+            label: const Text('Add to workout'),
+          )
+        else
+          ElevatedButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.check), label: const Text('Got it')),
         const SizedBox(height: 14),
         const Text('Exercise data by RepDB (repdb.co)', style: TextStyle(color: Colors.grey, fontSize: 11), textAlign: TextAlign.center),
       ]),
